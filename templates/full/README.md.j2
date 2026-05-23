@@ -1,0 +1,78 @@
+# {project_name}
+
+{description}
+
+## Quick Start
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your API keys
+   ```
+
+3. **Run the agent:**
+   ```bash
+   python agent.py
+   ```
+
+4. **Run tests:**
+   ```bash
+   pytest tests/ -v
+   ```
+
+## Project Structure
+
+```
+{project_name}/
+├── agent.py              # Main agent with context isolation and control flow
+├── config.py             # Environment-based configuration management
+├── tools.py              # Tool definitions with input/output schemas
+├── memory.py             # Persistent memory management
+├── prompts.py            # Centralized prompt template management
+├── requirements.txt      # Python dependencies
+├── .env.example          # Environment variable template
+├── tests/
+│   ├── __init__.py
+│   └── test_agent.py     # Unit tests
+└── README.md             # This file
+```
+
+## Features
+
+- **Context Isolation**: Separate management of system, user, and tool contexts
+- **Memory Management**: Persistent memory with search and recall capabilities
+- **Prompt Templates**: Centralized prompt management with variable substitution
+- **Tool Registry**: Extensible tool system with JSON Schema parameter definitions
+- **Error Handling**: Retry logic with exponential backoff
+- **State Persistence**: Save and restore full agent state
+- **Observability**: Comprehensive logging throughout
+
+## 12-Factor Agent Compliance
+
+| Factor | Status |
+|--------|--------|
+| F01 - Context Isolation | Implemented via `AgentContext` class |
+| F02 - Tool Interface | Structured tools with type hints and JSON Schemas |
+| F03 - Control Flow | Explicit agent loop with iteration limits |
+| F04 - State Management | JSON-based state persistence + MemoryStore |
+| F05 - Error Handling | Retry logic with exponential backoff |
+| F06 - Observability | Python logging throughout |
+| F07 - Security | Input validation, env-based secrets |
+| F08 - Testing | Unit tests in tests/ directory |
+| F09 - Configuration | Environment-based via `.env` |
+| F10 - Documentation | README and docstrings |
+| F11 - Dependency Management | `requirements.txt` |
+| F12 - Deployment | TODO: Add Dockerfile |
+
+## Configuration
+
+All configuration is done via environment variables. See `.env.example` for the full list.
+
+## License
+
+MIT

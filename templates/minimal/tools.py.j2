@@ -1,0 +1,211 @@
+"""
+Tool definitions for {project_name}.
+
+Each tool has a clear input/output schema using type hints and docstrings,
+following the 12-Factor Agent methodology for tool interfaces.
+"""
+
+import json
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class ToolRegistry:
+    """
+    Registry for managing agent tools.
+
+    Tools are registered with a name, description, and callable function.
+    The registry provides validation and execution capabilities.
+    """
+
+    def __init__(self) -> None:
+        self._tools: Dict[str, Dict[str, Any]] = {}
+
+    def register(
+        self,
+        name: str,
+        func: Callable,
+        description: str = "",
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Register a tool with the registry.
+
+        Args:
+            name: Unique tool name.
+            func: Callable that implements the tool logic.
+            description: Human-readable description of what the tool does.
+            parameters: JSON Schema describing the tool's input parameters.
+        """
+        self._tools[name] = {
+            "name": name,
+            "function": func,
+            "description": description or func.__doc__ or "",
+            "parameters": parameters or {},
+        }
+        logger.info("Tool registered: %s", name)
+
+    def execute(self, name: str, **kwargs) -> Any:
+        """
+        Execute a registered tool by name.
+
+        Args:
+            name: Name of the tool to execute.
+            **kwargs: Arguments to pass to the tool function.
+
+        Returns:
+            The tool's return value.
+
+        Raises:
+            KeyError: If the tool name is not registered.
+            Exception: If the tool execution fails.
+        """
+        if name not in self._tools:
+            raise KeyError(f"Tool '{name}' is not registered.")
+
+        tool = self._tools[name]
+        logger.info("Executing tool: %s with args: %s", name, kwargs)
+
+        try:
+            result = tool["function"](**kwargs)
+            logger.info("Tool %s completed successfully", name)
+            return result
+        except TypeError as e:
+            logger.error("Invalid arguments for tool %s: %s", name, e)
+            raise
+
+    def list_tools(self) -> List[Dict[str, str]]:
+        """Return a list of all registered tools with name and description."""
+        return [
+            {"name": t["name"], "description": t["description"]}
+            for t in self._tools.values()
+        ]
+
+    def get_tool_schema(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return the JSON Schema for a specific tool's parameters."""
+        tool = self._tools.get(name)
+        if tool:
+            return tool["parameters"]
+        return None
+
+
+# ── Example Tool Definitions ──────────────────────────────────────────────
+
+def calculator(expression: str) -> str:
+    """
+    Evaluate a mathematical expression safely.
+
+    Args:
+        expression: A mathematical expression (e.g., "2 + 3 * 4").
+
+    Returns:
+        The result of the evaluation as a string.
+
+    Raises:
+        ValueError: If the expression contains unsafe characters.
+    """
+    # Validate input -- only allow safe math characters
+    allowed = set("0123456789+-*/.() ")
+    if not all(c in allowed for c in expression):
+        raise ValueError(f"Unsafe characters in expression: {expression}")
+
+    try:
+        result = eval(expression)  # noqa: S307 -- input is validated above
+        return str(result)
+    except Exception as e:
+        return f"Error evaluating expression: {e}"
+
+
+def get_current_time(timezone: str = "UTC") -> str:
+    """
+    Get the current date and time.
+
+    Args:
+        timezone: Timezone name (default: "UTC").
+
+    Returns:
+        ISO formatted date/time string.
+    """
+    from datetime import datetime
+
+    try:
+        now = datetime.now()
+        return now.isoformat()
+    except Exception as e:
+        return f"Error getting time: {e}"
+
+
+def search_documents(query: str, max_results: int = 5) -> str:
+    """
+    Search through documents for relevant information.
+
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results to return (default: 5).
+
+    Returns:
+        JSON string containing search results.
+    """
+    # TODO: Implement actual document search logic
+    results = [
+        {"title": f"Result for: {query}", "relevance": 0.95},
+    ]
+    return json.dumps(results[:max_results], indent=2)
+
+
+def setup_default_tools(registry: ToolRegistry) -> None:
+    """Register the default set of tools with the given registry."""
+    registry.register(
+        name="calculator",
+        func=calculator,
+        description="Evaluate mathematical expressions safely.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "Math expression to evaluate (e.g., '2 + 3 * 4')",
+                }
+            },
+            "required": ["expression"],
+        },
+    )
+
+    registry.register(
+        name="get_current_time",
+        func=get_current_time,
+        description="Get the current date and time in ISO format.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": "Timezone name (default: UTC)",
+                    "default": "UTC",
+                }
+            },
+        },
+    )
+
+    registry.register(
+        name="search_documents",
+        func=search_documents,
+        description="Search through documents for relevant information.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query string",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum results to return",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    )

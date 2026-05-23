@@ -1,0 +1,308 @@
+"""
+{project_name} - {description}
+
+Full-featured agent with context isolation, memory management,
+prompt templates, tool integration, and comprehensive error handling.
+"""
+
+import json
+import logging
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from config import Settings, load_settings
+from memory import MemoryStore
+from prompts import PromptManager
+from tools import ToolRegistry, setup_default_tools
+
+# Configure logging for observability (12-Factor: Observability)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+class AgentContext:
+    """
+    Isolated context management for the agent.
+
+    Maintains separate containers for system prompts, user messages,
+    and tool results to ensure clean context boundaries.
+    (12-Factor: Context Isolation)
+    """
+
+    def __init__(self) -> None:
+        self.system_prompt: str = ""
+        self.user_messages: List[Dict[str, str]] = []
+        self.tool_results: List[Dict[str, Any]] = []
+        self.history: List[Dict[str, Any]] = []
+        self.metadata: Dict[str, Any] = {}
+
+    def add_system_message(self, content: str) -> None:
+        """Set the system prompt for the agent."""
+        self.system_prompt = content
+        logger.info("System prompt updated (%d chars)", len(content))
+
+    def add_user_message(self, content: str, metadata: Optional[Dict] = None) -> None:
+        """Add a user message to the context."""
+        msg = {
+            "role": "user",
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if metadata:
+            msg["metadata"] = metadata
+        self.user_messages.append(msg)
+        self.history.append(msg)
+        logger.debug("User message added: %s", content[:80])
+
+    def add_assistant_message(self, content: str) -> None:
+        """Add an assistant response to the context."""
+        msg = {
+            "role": "assistant",
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self.history.append(msg)
+
+    def add_tool_result(self, tool_name: str, result: Any) -> None:
+        """Add a tool execution result to the context."""
+        msg = {
+            "role": "tool",
+            "name": tool_name,
+            "content": json.dumps(result) if not isinstance(result, str) else result,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self.tool_results.append(msg)
+        self.history.append(msg)
+        logger.info("Tool result added from %s", tool_name)
+
+    def get_messages(self) -> List[Dict[str, Any]]:
+        """Return the full message history formatted for LLM API calls."""
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.extend(self.history)
+        return messages
+
+    def clear(self) -> None:
+        """Clear all context except the system prompt."""
+        self.user_messages.clear()
+        self.tool_results.clear()
+        self.history.clear()
+        logger.info("Context cleared")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize context to a dictionary for persistence."""
+        return {
+            "system_prompt": self.system_prompt,
+            "history": self.history,
+            "metadata": self.metadata,
+        }
+
+    def from_dict(self, data: Dict[str, Any]) -> None:
+        """Restore context from a dictionary."""
+        self.system_prompt = data.get("system_prompt", "")
+        self.history = data.get("history", [])
+        self.metadata = data.get("metadata", {})
+        logger.info("Context restored from saved state")
+
+
+class Agent:
+    """
+    Full-featured agent with memory, prompts, and tool management.
+
+    Implements the core agent loop with explicit control flow,
+    state management, and comprehensive error handling.
+    """
+
+    def __init__(self, settings: Optional[Settings] = None) -> None:
+        self.settings = settings or load_settings()
+        self.context = AgentContext()
+        self.tools = ToolRegistry()
+        self.memory = MemoryStore()
+        self.prompts = PromptManager()
+        self.state: Dict[str, Any] = {}
+        self.max_iterations: int = self.settings.max_iterations
+
+        # Register default tools
+        setup_default_tools(self.tools)
+
+        # Initialize system prompt from template
+        self.context.add_system_message(
+            self.prompts.get_prompt("system", agent_name=self.settings.app_name)
+        )
+
+        logger.info(
+            "Agent initialized: %s (v%s) with %d tools",
+            self.settings.app_name,
+            self.settings.app_version,
+            len(self.tools.list_tools()),
+        )
+
+    def run(self, user_input: str) -> str:
+        """
+        Run the agent with the given user input.
+
+        This is the main entry point. The agent will:
+        1. Store the input in memory
+        2. Add it to the conversation context
+        3. Loop: decide -> act -> observe
+        4. Return the final response
+
+        Args:
+            user_input: The user's message or query.
+
+        Returns:
+            The agent's response as a string.
+        """
+        # Store in memory for future reference
+        self.memory.store("user", user_input)
+
+        # Add to context
+        self.context.add_user_message(user_input)
+
+        iteration = 0
+        while iteration < self.max_iterations:
+            iteration += 1
+            logger.info("Agent iteration %d/%d", iteration, self.max_iterations)
+
+            try:
+                messages = self.context.get_messages()
+
+                # Check memory for relevant context
+                memory_context = self.memory.search(user_input)
+                if memory_context:
+                    logger.info("Found %d relevant memory entries", len(memory_context))
+
+                # Call LLM
+                response = self._call_llm(messages)
+
+                # Parse tool call
+                tool_call = self._parse_tool_call(response)
+                if tool_call:
+                    tool_name = tool_call["name"]
+                    tool_args = tool_call.get("arguments", {})
+
+                    logger.info("Executing tool: %s", tool_name)
+                    result = self._execute_tool_with_retry(tool_name, tool_args)
+                    self.context.add_tool_result(tool_name, result)
+                    self.memory.store("tool_result", {"tool": tool_name, "result": result})
+                    continue
+
+                # Final response
+                self.context.add_assistant_message(response)
+                self.memory.store("assistant", response)
+                return response
+
+            except Exception as e:
+                logger.error("Error in agent loop (iteration %d): %s", iteration, e)
+                # Try to provide a graceful fallback
+                return self.prompts.get_prompt(
+                    "error_fallback",
+                    error_message=str(e),
+                )
+
+        return "I was unable to complete your request within the maximum number of iterations."
+
+    def _call_llm(self, messages: List[Dict[str, Any]]) -> str:
+        """Call the LLM API with the given messages."""
+        # TODO: Implement actual API call
+        # Example with OpenAI:
+        # import openai
+        # client = openai.OpenAI(api_key=self.settings.llm_api_key)
+        # response = client.chat.completions.create(
+        #     model=self.settings.llm_model,
+        #     messages=messages,
+        #     temperature=self.settings.llm_temperature,
+        #     max_tokens=self.settings.llm_max_tokens,
+        # )
+        # return response.choices[0].message.content
+
+        return f"[LLM Response] Processing {len(messages)} messages..."
+
+    def _parse_tool_call(self, response: str) -> Optional[Dict[str, Any]]:
+        """Parse tool call from LLM response."""
+        # TODO: Implement based on your LLM's tool calling format
+        return None
+
+    def _execute_tool_with_retry(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        max_retries: int = 3,
+    ) -> Any:
+        """Execute a tool with retry logic and exponential backoff."""
+        import time
+
+        for attempt in range(max_retries):
+            try:
+                result = self.tools.execute(tool_name, **tool_args)
+                logger.info("Tool %s succeeded (attempt %d)", tool_name, attempt + 1)
+                return result
+            except Exception as e:
+                logger.warning(
+                    "Tool %s failed (attempt %d/%d): %s",
+                    tool_name, attempt + 1, max_retries, e,
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                else:
+                    return f"Error: {e}"
+
+    def save_state(self, filepath: str) -> None:
+        """Persist full agent state to a JSON file."""
+        state_data = {
+            "state": self.state,
+            "context": self.context.to_dict(),
+            "memory": self.memory.to_dict(),
+            "saved_at": datetime.now().isoformat(),
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(state_data, f, indent=2)
+        logger.info("State saved to %s", filepath)
+
+    def load_state(self, filepath: str) -> None:
+        """Restore agent state from a JSON file."""
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.state = data.get("state", {})
+            if "context" in data:
+                self.context.from_dict(data["context"])
+            if "memory" in data:
+                self.memory.from_dict(data["memory"])
+            logger.info("State loaded from %s", filepath)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error("Failed to load state: %s", e)
+
+    def reset(self) -> None:
+        """Reset the agent to a clean state."""
+        self.context.clear()
+        self.memory.clear()
+        self.state.clear()
+        logger.info("Agent reset to clean state")
+
+
+if __name__ == "__main__":
+    agent = Agent()
+    print("{project_name} v{version}")
+    print("Type 'quit' to exit, 'reset' to clear conversation.\n")
+
+    while True:
+        try:
+            user_input = input("You: ").strip()
+            if user_input.lower() == "quit":
+                break
+            if user_input.lower() == "reset":
+                agent.reset()
+                print("Conversation reset.\n")
+                continue
+
+            response = agent.run(user_input)
+            print(f"Agent: {response}\n")
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            break

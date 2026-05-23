@@ -1,0 +1,155 @@
+"""
+Memory management for {project_name}.
+
+Provides persistent memory storage for the agent, enabling it to
+remember past interactions and recall relevant information.
+(12-Factor: State Management)
+"""
+
+import json
+import logging
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryEntry:
+    """A single memory entry with content, metadata, and timestamp."""
+
+    def __init__(
+        self,
+        role: str,
+        content: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.role = role
+        self.content = content
+        self.metadata = metadata or {}
+        self.timestamp = datetime.now().isoformat()
+        self.id = f"{self.role}_{hash(str(content)) % 100000:05d}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the memory entry to a dictionary."""
+        return {
+            "id": self.id,
+            "role": self.role,
+            "content": self.content,
+            "metadata": self.metadata,
+            "timestamp": self.timestamp,
+        }
+
+
+class MemoryStore:
+    """
+    In-memory + file-backed memory store for the agent.
+
+    Supports storing, retrieving, searching, and persisting memories.
+    """
+
+    def __init__(self, max_entries: int = 1000) -> None:
+        self._entries: List[MemoryEntry] = []
+        self.max_entries = max_entries
+        logger.info("MemoryStore initialized (max_entries=%d)", max_entries)
+
+    def store(self, role: str, content: Any, metadata: Optional[Dict] = None) -> str:
+        """
+        Store a new memory entry.
+
+        Args:
+            role: The role/source (e.g., "user", "assistant", "tool_result").
+            content: The content to remember.
+            metadata: Optional metadata dict.
+
+        Returns:
+            The ID of the stored entry.
+        """
+        entry = MemoryEntry(role=role, content=content, metadata=metadata)
+        self._entries.append(entry)
+
+        # Enforce max entries limit (FIFO eviction)
+        if len(self._entries) > self.max_entries:
+            removed = self._entries.pop(0)
+            logger.debug("Evicted oldest memory entry: %s", removed.id)
+
+        logger.debug("Memory stored: %s (%d total entries)", entry.id, len(self._entries))
+        return entry.id
+
+    def search(self, query: str, limit: int = 5) -> List[MemoryEntry]:
+        """
+        Search memory entries by simple keyword matching.
+
+        Args:
+            query: Search query string.
+            limit: Maximum number of results.
+
+        Returns:
+            List of matching MemoryEntry objects.
+        """
+        query_lower = query.lower()
+        results = []
+
+        for entry in reversed(self._entries):  # Most recent first
+            content_str = str(entry.content).lower()
+            if query_lower in content_str:
+                results.append(entry)
+                if len(results) >= limit:
+                    break
+
+        logger.debug("Memory search '%s': %d results", query, len(results))
+        return results
+
+    def get_recent(self, limit: int = 10) -> List[MemoryEntry]:
+        """Return the most recent memory entries."""
+        return list(reversed(self._entries[-limit:]))
+
+    def get_by_role(self, role: str, limit: int = 10) -> List[MemoryEntry]:
+        """Return memory entries filtered by role."""
+        return [e for e in self._entries if e.role == role][-limit:]
+
+    def clear(self) -> None:
+        """Clear all memory entries."""
+        self._entries.clear()
+        logger.info("Memory cleared")
+
+    def count(self) -> int:
+        """Return the total number of stored entries."""
+        return len(self._entries)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the entire memory store to a dictionary."""
+        return {
+            "entries": [e.to_dict() for e in self._entries],
+            "count": len(self._entries),
+        }
+
+    def from_dict(self, data: Dict[str, Any]) -> None:
+        """Restore memory store from a dictionary."""
+        self._entries.clear()
+        for entry_data in data.get("entries", []):
+            entry = MemoryEntry(
+                role=entry_data["role"],
+                content=entry_data["content"],
+                metadata=entry_data.get("metadata", {}),
+            )
+            entry.timestamp = entry_data.get("timestamp", entry.timestamp)
+            entry.id = entry_data.get("id", entry.id)
+            self._entries.append(entry)
+        logger.info("Memory restored: %d entries", len(self._entries))
+
+    def save_to_file(self, filepath: str) -> None:
+        """Persist memory to a JSON file."""
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        logger.info("Memory saved to %s", filepath)
+
+    def load_from_file(self, filepath: str) -> None:
+        """Load memory from a JSON file."""
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.from_dict(data)
+            logger.info("Memory loaded from %s", filepath)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error("Failed to load memory from %s: %s", filepath, e)

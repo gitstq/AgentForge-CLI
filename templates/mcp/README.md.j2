@@ -1,0 +1,70 @@
+# {project_name}
+
+{description}
+
+## What is MCP?
+
+The Model Context Protocol (MCP) is an open standard that enables AI models
+to securely interact with external tools and data sources. This server exposes
+tools via the MCP interface, making them available to any MCP-compatible client.
+
+## Quick Start
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
+
+3. **Run the MCP server (stdio transport):**
+   ```bash
+   python server.py
+   ```
+
+## Project Structure
+
+```
+{project_name}/
+├── server.py             # MCP server implementation
+├── tools.py              # Tool definitions with JSON Schema parameters
+├── config.py             # Environment-based configuration
+├── requirements.txt      # Python dependencies
+├── .env.example          # Environment variable template
+└── README.md             # This file
+```
+
+## Available Tools
+
+| Tool | Description |
+|------|-------------|
+| calculator | Evaluate mathematical expressions |
+| get_current_time | Get current date/time in ISO format |
+| search_documents | Search through documents |
+| echo | Echo back input (for testing) |
+
+## MCP Protocol
+
+This server implements the MCP specification:
+
+- **Transport**: stdio (JSON-RPC over stdin/stdout)
+- **Protocol Version**: 2024-11-05
+- **Capabilities**: Tool listing and execution
+
+### Example MCP Request
+
+```json
+{{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {{"name": "calculator", "arguments": {{"expression": "2 + 3"}}}}}}
+```
+
+## Configuration
+
+All configuration is done via environment variables. See `.env.example`.
+
+## License
+
+MIT

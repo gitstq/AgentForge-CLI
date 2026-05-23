@@ -1,0 +1,170 @@
+"""
+Unit tests for {project_name} agent.
+
+Tests cover agent initialization, tool execution, memory management,
+and context handling.
+"""
+
+import json
+import os
+import sys
+import unittest
+from unittest.mock import patch, MagicMock
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config import Settings
+from tools import ToolRegistry, calculator, get_current_time, setup_default_tools
+from memory import MemoryStore, MemoryEntry
+from prompts import PromptManager
+
+
+class TestSettings(unittest.TestCase):
+    """Tests for the Settings configuration class."""
+
+    def test_default_settings(self) -> None:
+        """Settings should have sensible defaults."""
+        settings = Settings()
+        self.assertEqual(settings.llm_provider, "openai")
+        self.assertEqual(settings.llm_model, "gpt-4")
+        self.assertEqual(settings.max_iterations, 10)
+
+    def test_validate_missing_api_key(self) -> None:
+        """Validation should fail when API key is missing."""
+        settings = Settings(llm_api_key="")
+        errors = settings.validate()
+        self.assertTrue(any("LLM_API_KEY" in e for e in errors))
+
+    def test_validate_invalid_temperature(self) -> None:
+        """Validation should fail for out-of-range temperature."""
+        settings = Settings(llm_api_key="test-key", llm_temperature=5.0)
+        errors = settings.validate()
+        self.assertTrue(any("TEMPERATURE" in e for e in errors))
+
+    def test_validate_valid_settings(self) -> None:
+        """Validation should pass for valid settings."""
+        settings = Settings(llm_api_key="test-key", llm_temperature=0.7)
+        errors = settings.validate()
+        self.assertEqual(len(errors), 0)
+
+
+class TestToolRegistry(unittest.TestCase):
+    """Tests for the ToolRegistry class."""
+
+    def setUp(self) -> None:
+        self.registry = ToolRegistry()
+
+    def test_register_tool(self) -> None:
+        """Tools should be registerable and listable."""
+        self.registry.register("test_tool", lambda x: x, description="A test tool")
+        tools = self.registry.list_tools()
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(tools[0]["name"], "test_tool")
+
+    def test_execute_tool(self) -> None:
+        """Registered tools should be executable."""
+        self.registry.register("add", lambda a, b: a + b)
+        result = self.registry.execute("add", a=1, b=2)
+        self.assertEqual(result, 3)
+
+    def test_execute_unknown_tool(self) -> None:
+        """Executing an unknown tool should raise KeyError."""
+        with self.assertRaises(KeyError):
+            self.registry.execute("nonexistent")
+
+    def test_unregister_tool(self) -> None:
+        """Tools should be removable from the registry."""
+        self.registry.register("temp", lambda: None)
+        self.registry.unregister("temp")
+        self.assertEqual(len(self.registry.list_tools()), 0)
+
+    def test_setup_default_tools(self) -> None:
+        """Default tools should be registered successfully."""
+        setup_default_tools(self.registry)
+        tools = self.registry.list_tools()
+        self.assertTrue(len(tools) >= 3)
+        names = [t["name"] for t in tools]
+        self.assertIn("calculator", names)
+
+
+class TestCalculator(unittest.TestCase):
+    """Tests for the calculator tool."""
+
+    def test_basic_arithmetic(self) -> None:
+        self.assertEqual(calculator("2 + 3"), "5")
+
+    def test_multiplication(self) -> None:
+        self.assertEqual(calculator("4 * 5"), "20")
+
+    def test_unsafe_characters(self) -> None:
+        with self.assertRaises(ValueError):
+            calculator("import os")
+
+
+class TestMemoryStore(unittest.TestCase):
+    """Tests for the MemoryStore class."""
+
+    def setUp(self) -> None:
+        self.memory = MemoryStore(max_entries=5)
+
+    def test_store_and_count(self) -> None:
+        self.memory.store("user", "Hello")
+        self.assertEqual(self.memory.count(), 1)
+
+    def test_search(self) -> None:
+        self.memory.store("user", "The weather is nice today")
+        results = self.memory.search("weather")
+        self.assertEqual(len(results), 1)
+
+    def test_max_entries_eviction(self) -> None:
+        for i in range(10):
+            self.memory.store("user", f"message {i}")
+        self.assertLessEqual(self.memory.count(), 5)
+
+    def test_clear(self) -> None:
+        self.memory.store("user", "test")
+        self.memory.clear()
+        self.assertEqual(self.memory.count(), 0)
+
+    def test_persistence(self) -> None:
+        self.memory.store("user", "persist me")
+        data = self.memory.to_dict()
+        new_memory = MemoryStore()
+        new_memory.from_dict(data)
+        self.assertEqual(new_memory.count(), 1)
+
+    def test_get_by_role(self) -> None:
+        self.memory.store("user", "hello")
+        self.memory.store("assistant", "hi there")
+        self.memory.store("user", "how are you")
+        user_entries = self.memory.get_by_role("user")
+        self.assertEqual(len(user_entries), 2)
+
+
+class TestPromptManager(unittest.TestCase):
+    """Tests for the PromptManager class."""
+
+    def setUp(self) -> None:
+        self.prompts = PromptManager()
+
+    def test_get_system_prompt(self) -> None:
+        prompt = self.prompts.get_prompt("system", agent_name="TestBot")
+        self.assertIn("TestBot", prompt)
+
+    def test_get_unknown_prompt(self) -> None:
+        with self.assertRaises(KeyError):
+            self.prompts.get_prompt("nonexistent")
+
+    def test_register_custom_prompt(self) -> None:
+        self.prompts.register("custom", "Hello {name}!")
+        result = self.prompts.get_prompt("custom", name="World")
+        self.assertEqual(result, "Hello World!")
+
+    def test_list_templates(self) -> None:
+        templates = self.prompts.list_templates()
+        self.assertIn("system", templates)
+
+
+if __name__ == "__main__":
+    unittest.main()

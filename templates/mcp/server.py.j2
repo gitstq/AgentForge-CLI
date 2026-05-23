@@ -1,0 +1,222 @@
+"""
+{project_name} - MCP Server
+
+A Model Context Protocol (MCP) compatible server that exposes
+AI agent tools via the standardized MCP interface.
+"""
+
+import json
+import logging
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from config import Settings, load_settings
+from tools import ToolRegistry, setup_default_tools
+
+# Configure logging for observability
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+class MCPServer:
+    """
+    MCP-compatible server implementation.
+
+    Handles MCP protocol messages and routes tool calls to the
+    registered tool registry. Implements the MCP specification
+    for tool discovery and execution.
+    """
+
+    PROTOCOL_VERSION = "2024-11-05"
+    SERVER_NAME = "{project_name}"
+    SERVER_VERSION = "{version}"
+
+    def __init__(self, settings: Optional[Settings] = None) -> None:
+        self.settings = settings or load_settings()
+        self.tools = ToolRegistry()
+        self.state: Dict[str, Any] = {}
+
+        # Register available tools
+        setup_default_tools(self.tools)
+
+        logger.info(
+            "MCP Server '%s' v%s initialized with %d tools",
+            self.SERVER_NAME,
+            self.SERVER_VERSION,
+            len(self.tools.list_tools()),
+        )
+
+    def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle an incoming MCP protocol request.
+
+        Args:
+            request: MCP request dictionary with 'method' and optional 'params'.
+
+        Returns:
+            MCP response dictionary.
+        """
+        method = request.get("method", "")
+        request_id = request.get("id")
+        params = request.get("params", {})
+
+        logger.info("MCP request: %s (id=%s)", method, request_id)
+
+        try:
+            # Route to appropriate handler
+            handler = {
+                "initialize": self._handle_initialize,
+                "tools/list": self._handle_tools_list,
+                "tools/call": self._handle_tools_call,
+                "ping": self._handle_ping,
+            }.get(method)
+
+            if handler is None:
+                return self._error_response(request_id, -32601, f"Method not found: {method}")
+
+            result = handler(params)
+            return self._success_response(request_id, result)
+
+        except Exception as e:
+            logger.error("Error handling request %s: %s", method, e)
+            return self._error_response(request_id, -32603, str(e))
+
+    def _handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle MCP initialize request."""
+        return {
+            "protocolVersion": self.PROTOCOL_VERSION,
+            "capabilities": {
+                "tools": {
+                    "listChanged": False,
+                },
+            },
+            "serverInfo": {
+                "name": self.SERVER_NAME,
+                "version": self.SERVER_VERSION,
+            },
+        }
+
+    def _handle_tools_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle MCP tools/list request."""
+        tools = self.tools.list_tools()
+        mcp_tools = []
+        for tool in tools:
+            schema = self.tools.get_tool_schema(tool["name"]) or {}
+            mcp_tools.append({
+                "name": tool["name"],
+                "description": tool["description"],
+                "inputSchema": schema,
+            })
+        return {"tools": mcp_tools}
+
+    def _handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle MCP tools/call request.
+
+        Executes the requested tool with the provided arguments and
+        returns the result in MCP format.
+        """
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+
+        if not tool_name:
+            raise ValueError("Tool name is required")
+
+        logger.info("MCP tool call: %s with args: %s", tool_name, arguments)
+
+        try:
+            result = self.tools.execute(tool_name, **arguments)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": str(result),
+                    }
+                ],
+            }
+        except Exception as e:
+            logger.error("Tool execution failed: %s", e)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Error: {e}",
+                    }
+                ],
+                "isError": True,
+            }
+
+    def _handle_ping(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle MCP ping request."""
+        return {}
+
+    def _success_response(self, request_id: Optional[Any], result: Any) -> Dict[str, Any]:
+        """Build a successful MCP response."""
+        response: Dict[str, Any] = {"jsonrpc": "2.0", "result": result}
+        if request_id is not None:
+            response["id"] = request_id
+        return response
+
+    def _error_response(
+        self,
+        request_id: Optional[Any],
+        code: int,
+        message: str,
+    ) -> Dict[str, Any]:
+        """Build an error MCP response."""
+        response: Dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "error": {"code": code, "message": message},
+        }
+        if request_id is not None:
+            response["id"] = request_id
+        return response
+
+    def run_stdio(self) -> None:
+        """
+        Run the MCP server using stdio transport.
+
+        Reads JSON-RPC messages from stdin and writes responses to stdout.
+        This is the standard transport for MCP servers.
+        """
+        logger.info("MCP server starting (stdio transport)")
+
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                request = json.loads(line)
+                response = self.handle_request(request)
+                print(json.dumps(response), flush=True)
+            except json.JSONDecodeError as e:
+                logger.error("Invalid JSON: %s", e)
+                error_resp = self._error_response(None, -32700, "Parse error")
+                print(json.dumps(error_resp), flush=True)
+
+    def save_state(self, filepath: str) -> None:
+        """Persist server state to a JSON file."""
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(self.state, f, indent=2)
+        logger.info("State saved to %s", filepath)
+
+    def load_state(self, filepath: str) -> None:
+        """Load server state from a JSON file."""
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                self.state = json.load(f)
+            logger.info("State loaded from %s", filepath)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error("Failed to load state: %s", e)
+
+
+if __name__ == "__main__":
+    import sys
+
+    server = MCPServer()
+    server.run_stdio()

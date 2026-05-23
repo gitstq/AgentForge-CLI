@@ -1,0 +1,60 @@
+# {project_name}
+
+{description}
+
+## Quick Start
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your API keys
+   ```
+
+3. **Run the agent:**
+   ```bash
+   python agent.py
+   ```
+
+## Project Structure
+
+```
+{project_name}/
+├── agent.py              # Main agent with context isolation and control flow
+├── config.py             # Environment-based configuration management
+├── tools.py              # Tool definitions with input/output schemas
+├── requirements.txt      # Python dependencies
+├── .env.example          # Environment variable template
+└── README.md             # This file
+```
+
+## 12-Factor Agent Compliance
+
+This project follows the [12-Factor Agent methodology](https://github.com/agentforge):
+
+| Factor | Status |
+|--------|--------|
+| F01 - Context Isolation | Implemented via `AgentContext` class |
+| F02 - Tool Interface | Structured tools with type hints and schemas |
+| F03 - Control Flow | Explicit agent loop with iteration limits |
+| F04 - State Management | JSON-based state persistence |
+| F05 - Error Handling | Retry logic with exponential backoff |
+| F06 - Observability | Python logging throughout |
+| F07 - Security | Input validation, env-based secrets |
+| F08 - Testing | TODO: Add tests |
+| F09 - Configuration | Environment-based via `.env` |
+| F10 - Documentation | README and docstrings |
+| F11 - Dependency Management | `requirements.txt` |
+| F12 - Deployment | TODO: Add Dockerfile |
+
+## Configuration
+
+All configuration is done via environment variables. See `.env.example` for the full list.
+
+## License
+
+MIT

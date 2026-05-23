@@ -1,0 +1,255 @@
+"""
+Tool definitions for {project_name}.
+
+Each tool has a clear input/output schema using type hints and docstrings,
+following the 12-Factor Agent methodology for tool interfaces.
+"""
+
+import json
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class ToolRegistry:
+    """
+    Registry for managing agent tools.
+
+    Tools are registered with a name, description, and callable function.
+    The registry provides validation and execution capabilities.
+    """
+
+    def __init__(self) -> None:
+        self._tools: Dict[str, Dict[str, Any]] = {}
+
+    def register(
+        self,
+        name: str,
+        func: Callable,
+        description: str = "",
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Register a tool with the registry.
+
+        Args:
+            name: Unique tool name.
+            func: Callable that implements the tool logic.
+            description: Human-readable description of what the tool does.
+            parameters: JSON Schema describing the tool's input parameters.
+        """
+        self._tools[name] = {
+            "name": name,
+            "function": func,
+            "description": description or func.__doc__ or "",
+            "parameters": parameters or {},
+        }
+        logger.info("Tool registered: %s", name)
+
+    def execute(self, name: str, **kwargs) -> Any:
+        """
+        Execute a registered tool by name.
+
+        Args:
+            name: Name of the tool to execute.
+            **kwargs: Arguments to pass to the tool function.
+
+        Returns:
+            The tool's return value.
+
+        Raises:
+            KeyError: If the tool name is not registered.
+        """
+        if name not in self._tools:
+            raise KeyError(f"Tool '{name}' is not registered.")
+
+        tool = self._tools[name]
+        logger.info("Executing tool: %s with args: %s", name, kwargs)
+
+        try:
+            result = tool["function"](**kwargs)
+            logger.info("Tool %s completed successfully", name)
+            return result
+        except TypeError as e:
+            logger.error("Invalid arguments for tool %s: %s", name, e)
+            raise
+
+    def list_tools(self) -> List[Dict[str, str]]:
+        """Return a list of all registered tools with name and description."""
+        return [
+            {"name": t["name"], "description": t["description"]}
+            for t in self._tools.values()
+        ]
+
+    def get_tool_schema(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return the JSON Schema for a specific tool's parameters."""
+        tool = self._tools.get(name)
+        return tool["parameters"] if tool else None
+
+    def unregister(self, name: str) -> None:
+        """Remove a tool from the registry."""
+        if name in self._tools:
+            del self._tools[name]
+            logger.info("Tool unregistered: %s", name)
+
+
+# ── Tool Implementations ──────────────────────────────────────────────────
+
+def calculator(expression: str) -> str:
+    """
+    Evaluate a mathematical expression safely.
+
+    Args:
+        expression: A mathematical expression (e.g., "2 + 3 * 4").
+
+    Returns:
+        The result of the evaluation as a string.
+    """
+    allowed = set("0123456789+-*/.() ")
+    if not all(c in allowed for c in expression):
+        raise ValueError(f"Unsafe characters in expression: {expression}")
+
+    try:
+        result = eval(expression)  # noqa: S307 -- validated above
+        return str(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def get_current_time(timezone: str = "UTC") -> str:
+    """
+    Get the current date and time.
+
+    Args:
+        timezone: Timezone name (default: "UTC").
+
+    Returns:
+        ISO formatted date/time string.
+    """
+    from datetime import datetime
+    return datetime.now().isoformat()
+
+
+def search_documents(query: str, max_results: int = 5) -> str:
+    """
+    Search through documents for relevant information.
+
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results to return.
+
+    Returns:
+        JSON string containing search results.
+    """
+    results = [{"title": f"Result for: {query}", "relevance": 0.95}]
+    return json.dumps(results[:max_results], indent=2)
+
+
+def list_files_tool(directory: str = ".") -> str:
+    """
+    List files in a directory.
+
+    Args:
+        directory: Path to the directory (default: current directory).
+
+    Returns:
+        JSON string listing files and directories.
+    """
+    import os
+
+    try:
+        entries = os.listdir(directory)
+        return json.dumps(
+            [{"name": e, "is_dir": os.path.isdir(os.path.join(directory, e))} for e in entries],
+            indent=2,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def text_analysis(text: str) -> str:
+    """
+    Perform basic text analysis (word count, character count, etc.).
+
+    Args:
+        text: The text to analyze.
+
+    Returns:
+        JSON string with analysis results.
+    """
+    words = text.split()
+    result = {
+        "character_count": len(text),
+        "word_count": len(words),
+        "sentence_count": text.count(".") + text.count("!") + text.count("?"),
+        "avg_word_length": sum(len(w) for w in words) / max(len(words), 1),
+    }
+    return json.dumps(result, indent=2)
+
+
+def setup_default_tools(registry: ToolRegistry) -> None:
+    """Register the default set of tools with the given registry."""
+    registry.register(
+        name="calculator",
+        func=calculator,
+        description="Evaluate mathematical expressions safely.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "Math expression"},
+            },
+            "required": ["expression"],
+        },
+    )
+
+    registry.register(
+        name="get_current_time",
+        func=get_current_time,
+        description="Get the current date and time.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "timezone": {"type": "string", "default": "UTC"},
+            },
+        },
+    )
+
+    registry.register(
+        name="search_documents",
+        func=search_documents,
+        description="Search documents for information.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "default": 5},
+            },
+            "required": ["query"],
+        },
+    )
+
+    registry.register(
+        name="list_files",
+        func=list_files_tool,
+        description="List files in a directory.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "default": "."},
+            },
+        },
+    )
+
+    registry.register(
+        name="text_analysis",
+        func=text_analysis,
+        description="Analyze text for word count, character count, etc.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to analyze"},
+            },
+            "required": ["text"],
+        },
+    )
